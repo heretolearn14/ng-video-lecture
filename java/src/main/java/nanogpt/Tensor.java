@@ -19,6 +19,12 @@ public class Tensor {
     Runnable backwardFn;
     List<Tensor> parents = new ArrayList<>();
 
+    /**
+     * When true, no autograd graph is built — equivalent to PyTorch's torch.no_grad().
+     * Use this during evaluation and generation to avoid OOM from graph accumulation.
+     */
+    public static boolean noGrad = false;
+
     // ---- Constructors ----
 
     public Tensor(float[] data, int[] shape, boolean requiresGrad) {
@@ -167,6 +173,16 @@ public class Tensor {
         }
     }
 
+    /** Set up autograd tracking on a result tensor (skipped when noGrad is true). */
+    private static void trackAutograd(Tensor result, Runnable backwardFn, Tensor... parents) {
+        if (noGrad) {
+            result.requiresGrad = false;
+            return;
+        }
+        for (Tensor p : parents) result.parents.add(p);
+        result.backwardFn = backwardFn;
+    }
+
     // ---- Tensor Operations ----
 
     // --- Matrix Multiplication ---
@@ -203,10 +219,8 @@ public class Tensor {
             }
         }
 
-        Tensor result = new Tensor(out, new int[]{M, N}, a.requiresGrad || b.requiresGrad);
-        result.parents.add(a);
-        result.parents.add(b);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, new int[]{M, N}, !noGrad && (a.requiresGrad || b.requiresGrad));
+        trackAutograd(result, () -> {
             // dA = dC @ B^T
             if (a.requiresGrad) {
                 a.ensureGrad();
@@ -233,7 +247,7 @@ public class Tensor {
                     }
                 }
             }
-        };
+        }, a, b);
         return result;
     }
 
@@ -258,10 +272,8 @@ public class Tensor {
             }
         }
 
-        Tensor result = new Tensor(out, new int[]{B, M, N}, a.requiresGrad || b.requiresGrad);
-        result.parents.add(a);
-        result.parents.add(b);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, new int[]{B, M, N}, !noGrad && (a.requiresGrad || b.requiresGrad));
+        trackAutograd(result, () -> {
             for (int batch = 0; batch < B; batch++) {
                 int aOff = batch * M * K;
                 int bOff = batch * K * N;
@@ -291,7 +303,7 @@ public class Tensor {
                     }
                 }
             }
-        };
+        }, a, b);
         return result;
     }
 
@@ -316,10 +328,8 @@ public class Tensor {
         for (int i = 0; i < out.length; i++) {
             out[i] = a.data[i] + b.data[i];
         }
-        Tensor result = new Tensor(out, a.shape.clone(), a.requiresGrad || b.requiresGrad);
-        result.parents.add(a);
-        result.parents.add(b);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, a.shape.clone(), !noGrad && (a.requiresGrad || b.requiresGrad));
+        trackAutograd(result, () -> {
             if (a.requiresGrad) {
                 a.ensureGrad();
                 for (int i = 0; i < a.grad.length; i++) a.grad[i] += result.grad[i];
@@ -328,7 +338,7 @@ public class Tensor {
                 b.ensureGrad();
                 for (int i = 0; i < b.grad.length; i++) b.grad[i] += result.grad[i];
             }
-        };
+        }, a, b);
         return result;
     }
 
@@ -346,10 +356,8 @@ public class Tensor {
             out[i] = large.data[i] + small.data[i % smallNumel];
         }
 
-        Tensor result = new Tensor(out, large.shape.clone(), large.requiresGrad || small.requiresGrad);
-        result.parents.add(large);
-        result.parents.add(small);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, large.shape.clone(), !noGrad && (large.requiresGrad || small.requiresGrad));
+        trackAutograd(result, () -> {
             if (large.requiresGrad) {
                 large.ensureGrad();
                 for (int i = 0; i < large.grad.length; i++) large.grad[i] += result.grad[i];
@@ -360,7 +368,7 @@ public class Tensor {
                     small.grad[i % smallNumel] += result.grad[i];
                 }
             }
-        };
+        }, large, small);
         return result;
     }
 
@@ -371,16 +379,15 @@ public class Tensor {
         for (int i = 0; i < data.length; i++) {
             out[i] = data[i] * scalar;
         }
-        Tensor result = new Tensor(out, shape.clone(), requiresGrad);
-        result.parents.add(this);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, shape.clone(), !noGrad && requiresGrad);
+        trackAutograd(result, () -> {
             if (this.requiresGrad) {
                 this.ensureGrad();
                 for (int i = 0; i < data.length; i++) {
                     this.grad[i] += result.grad[i] * scalar;
                 }
             }
-        };
+        }, this);
         return result;
     }
 
@@ -393,9 +400,11 @@ public class Tensor {
     public Tensor view(int... newShape) {
         int[] resolved = resolveShape(newShape, numel());
         // Share data array, create new tensor with new shape
-        Tensor result = new Tensor(this.data, resolved, this.requiresGrad);
-        result.parents.add(this);
+        Tensor result = new Tensor(this.data, resolved, !noGrad && this.requiresGrad);
 
+        if (noGrad) return result;
+
+        result.parents.add(this);
         if (this.grad != null) {
             // Share grad array directly - no backward function needed since they're the same array
             result.grad = this.grad;
@@ -466,9 +475,8 @@ public class Tensor {
         }
 
         final int d0 = dim0, d1 = dim1;
-        Tensor result = new Tensor(out, newShape, requiresGrad);
-        result.parents.add(this);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, newShape, !noGrad && requiresGrad);
+        trackAutograd(result, () -> {
             if (this.requiresGrad) {
                 this.ensureGrad();
                 int[] ns = newShape;
@@ -483,7 +491,7 @@ public class Tensor {
                     this.grad[srcIdx] += result.grad[i];
                 }
             }
-        };
+        }, this);
         return result;
     }
 
@@ -520,9 +528,8 @@ public class Tensor {
             }
         }
 
-        Tensor result = new Tensor(out, shape.clone(), requiresGrad);
-        result.parents.add(this);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, shape.clone(), !noGrad && requiresGrad);
+        trackAutograd(result, () -> {
             if (this.requiresGrad) {
                 this.ensureGrad();
                 for (int i = 0; i < outerSize; i++) {
@@ -537,7 +544,7 @@ public class Tensor {
                     }
                 }
             }
-        };
+        }, this);
         return result;
     }
 
@@ -548,16 +555,15 @@ public class Tensor {
         for (int i = 0; i < data.length; i++) {
             out[i] = Math.max(0, data[i]);
         }
-        Tensor result = new Tensor(out, shape.clone(), requiresGrad);
-        result.parents.add(this);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, shape.clone(), !noGrad && requiresGrad);
+        trackAutograd(result, () -> {
             if (this.requiresGrad) {
                 this.ensureGrad();
                 for (int i = 0; i < data.length; i++) {
                     this.grad[i] += (data[i] > 0 ? 1.0f : 0.0f) * result.grad[i];
                 }
             }
-        };
+        }, this);
         return result;
     }
 
@@ -575,9 +581,8 @@ public class Tensor {
             int maskIdx = i % mask.length;
             out[i] = (mask[maskIdx] == 0.0f) ? value : data[i];
         }
-        Tensor result = new Tensor(out, shape.clone(), requiresGrad);
-        result.parents.add(this);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, shape.clone(), !noGrad && requiresGrad);
+        trackAutograd(result, () -> {
             if (this.requiresGrad) {
                 this.ensureGrad();
                 for (int i = 0; i < data.length; i++) {
@@ -585,7 +590,7 @@ public class Tensor {
                     this.grad[i] += (mask[maskIdx] == 0.0f) ? 0.0f : result.grad[i];
                 }
             }
-        };
+        }, this);
         return result;
     }
 
@@ -629,26 +634,28 @@ public class Tensor {
             }
         }
 
-        Tensor result = new Tensor(out, newShape, reqGrad);
-        for (Tensor t : tensors) result.parents.add(t);
-        final int outerSz = outerSize;
-        final int totalLD = totalLastDim;
-        result.backwardFn = () -> {
-            int catOff = 0;
-            for (int t = 0; t < tensors.size(); t++) {
-                Tensor tensor = tensors.get(t);
-                if (tensor.requiresGrad) {
-                    tensor.ensureGrad();
-                    int ld = lastDims[t];
-                    for (int i = 0; i < outerSz; i++) {
-                        for (int j = 0; j < ld; j++) {
-                            tensor.grad[i * ld + j] += result.grad[i * totalLD + catOff + j];
+        Tensor result = new Tensor(out, newShape, !noGrad && reqGrad);
+        if (!noGrad) {
+            for (Tensor t : tensors) result.parents.add(t);
+            final int outerSz = outerSize;
+            final int totalLD = totalLastDim;
+            result.backwardFn = () -> {
+                int catOff = 0;
+                for (int t = 0; t < tensors.size(); t++) {
+                    Tensor tensor = tensors.get(t);
+                    if (tensor.requiresGrad) {
+                        tensor.ensureGrad();
+                        int ld = lastDims[t];
+                        for (int i = 0; i < outerSz; i++) {
+                            for (int j = 0; j < ld; j++) {
+                                tensor.grad[i * ld + j] += result.grad[i * totalLD + catOff + j];
+                            }
                         }
                     }
+                    catOff += lastDims[t];
                 }
-                catOff += lastDims[t];
-            }
-        };
+            };
+        }
         return result;
     }
 
@@ -683,9 +690,8 @@ public class Tensor {
             System.arraycopy(data, srcBase, out, o * innerSize, innerSize);
         }
 
-        Tensor result = new Tensor(out, newShape, requiresGrad);
-        result.parents.add(this);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, newShape, !noGrad && requiresGrad);
+        trackAutograd(result, () -> {
             if (this.requiresGrad) {
                 this.ensureGrad();
                 for (int o = 0; o < outerSize; o++) {
@@ -695,7 +701,7 @@ public class Tensor {
                     }
                 }
             }
-        };
+        }, this);
         return result;
     }
 
@@ -732,9 +738,8 @@ public class Tensor {
             }
         }
 
-        Tensor result = new Tensor(out, newShape, requiresGrad);
-        result.parents.add(this);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, newShape, !noGrad && requiresGrad);
+        trackAutograd(result, () -> {
             if (this.requiresGrad) {
                 this.ensureGrad();
                 for (int o = 0; o < outerSize; o++) {
@@ -747,7 +752,7 @@ public class Tensor {
                     }
                 }
             }
-        };
+        }, this);
         return result;
     }
 
@@ -773,9 +778,8 @@ public class Tensor {
             System.arraycopy(data, idx * embDim, out, i * embDim, embDim);
         }
 
-        Tensor result = new Tensor(out, outShape, requiresGrad);
-        result.parents.add(this);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, outShape, !noGrad && requiresGrad);
+        trackAutograd(result, () -> {
             if (this.requiresGrad) {
                 this.ensureGrad();
                 for (int i = 0; i < numIndices; i++) {
@@ -785,7 +789,7 @@ public class Tensor {
                     }
                 }
             }
-        };
+        }, this);
         return result;
     }
 
@@ -821,9 +825,8 @@ public class Tensor {
         }
         loss /= N;
 
-        Tensor result = new Tensor(new float[]{loss}, new int[]{1}, logits.requiresGrad);
-        result.parents.add(logits);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(new float[]{loss}, new int[]{1}, !noGrad && logits.requiresGrad);
+        trackAutograd(result, () -> {
             if (logits.requiresGrad) {
                 logits.ensureGrad();
                 for (int i = 0; i < N; i++) {
@@ -834,7 +837,7 @@ public class Tensor {
                     }
                 }
             }
-        };
+        }, logits);
         return result;
     }
 
@@ -875,8 +878,9 @@ public class Tensor {
             }
         }
 
-        boolean reqGrad = x.requiresGrad || gamma.requiresGrad || beta.requiresGrad;
+        boolean reqGrad = !noGrad && (x.requiresGrad || gamma.requiresGrad || beta.requiresGrad);
         Tensor result = new Tensor(out, x.shape.clone(), reqGrad);
+        if (noGrad) return result;
         result.parents.add(x);
         result.parents.add(gamma);
         result.parents.add(beta);
@@ -943,16 +947,15 @@ public class Tensor {
         for (int i = 0; i < data.length; i++) {
             out[i] = mask[i] ? data[i] * scale : 0;
         }
-        Tensor result = new Tensor(out, shape.clone(), requiresGrad);
-        result.parents.add(this);
-        result.backwardFn = () -> {
+        Tensor result = new Tensor(out, shape.clone(), !noGrad && requiresGrad);
+        trackAutograd(result, () -> {
             if (this.requiresGrad) {
                 this.ensureGrad();
                 for (int i = 0; i < data.length; i++) {
                     this.grad[i] += mask[i] ? result.grad[i] * scale : 0;
                 }
             }
-        };
+        }, this);
         return result;
     }
 

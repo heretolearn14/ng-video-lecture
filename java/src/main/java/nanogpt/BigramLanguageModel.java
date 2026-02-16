@@ -50,21 +50,27 @@ public class BigramLanguageModel extends Module {
         List<Integer> tokens = new ArrayList<>();
         for (int i : idx) tokens.add(i);
 
-        for (int i = 0; i < maxNewTokens; i++) {
-            int[] currentIdx = tokens.stream().mapToInt(Integer::intValue).toArray();
-            int[] idxShape = {1, currentIdx.length};
+        // No gradient tracking during generation
+        Tensor.noGrad = true;
+        try {
+            for (int i = 0; i < maxNewTokens; i++) {
+                int[] currentIdx = tokens.stream().mapToInt(Integer::intValue).toArray();
+                int[] idxShape = {1, currentIdx.length};
 
-            Tensor[] result = forward(currentIdx, idxShape, null);
-            Tensor logits = result[0]; // (1, T, vocabSize)
+                Tensor[] result = forward(currentIdx, idxShape, null);
+                Tensor logits = result[0]; // (1, T, vocabSize)
 
-            // Focus on last time step
-            Tensor lastLogits = logits.selectAlongDim(1, -1); // (1, vocabSize)
-            // Squeeze to 1D
-            Tensor probs = lastLogits.view(vocabSize).softmax();
+                // Focus on last time step
+                Tensor lastLogits = logits.selectAlongDim(1, -1); // (1, vocabSize)
+                // Squeeze to 1D
+                Tensor probs = lastLogits.view(vocabSize).softmax();
 
-            // Sample
-            int nextToken = probs.multinomial(rng);
-            tokens.add(nextToken);
+                // Sample
+                int nextToken = probs.multinomial(rng);
+                tokens.add(nextToken);
+            }
+        } finally {
+            Tensor.noGrad = false;
         }
 
         return tokens.stream().mapToInt(Integer::intValue).toArray();

@@ -41,6 +41,22 @@
                     <target>17</target>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <configuration>
+                    <executable>java</executable>
+                    <arguments>
+                        <argument>-Xmx4g</argument>
+                        <argument>-cp</argument>
+                        <argument>${project.build.outputDirectory}</argument>
+                        <argument>nanogpt.Main</argument>
+                        <argument>gpt</argument>
+                        <argument>input.txt</argument>
+                    </arguments>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 </project>

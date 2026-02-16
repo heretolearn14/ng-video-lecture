@@ -181,29 +181,33 @@ public class Main {
         String[] splits = {"train", "val"};
         int[] shape = dataLoader.getShape();
 
-        // Set eval mode
+        // Set eval mode — disable gradient tracking (equivalent of @torch.no_grad())
         if (model instanceof Module m) m.eval();
+        Tensor.noGrad = true;
 
-        for (int s = 0; s < 2; s++) {
-            float totalLoss = 0;
-            for (int k = 0; k < evalIters; k++) {
-                int[][] batch = dataLoader.getBatch(splits[s]);
-                int[] xb = batch[0];
-                int[] yb = batch[1];
+        try {
+            for (int s = 0; s < 2; s++) {
+                float totalLoss = 0;
+                for (int k = 0; k < evalIters; k++) {
+                    int[][] batch = dataLoader.getBatch(splits[s]);
+                    int[] xb = batch[0];
+                    int[] yb = batch[1];
 
-                Tensor[] result;
-                if (model instanceof BigramLanguageModel bm) {
-                    result = bm.forward(xb, shape, yb);
-                } else {
-                    result = ((GPTLanguageModel) model).forward(xb, shape, yb);
+                    Tensor[] result;
+                    if (model instanceof BigramLanguageModel bm) {
+                        result = bm.forward(xb, shape, yb);
+                    } else {
+                        result = ((GPTLanguageModel) model).forward(xb, shape, yb);
+                    }
+                    totalLoss += result[1].item();
                 }
-                totalLoss += result[1].item();
+                out[s] = totalLoss / evalIters;
             }
-            out[s] = totalLoss / evalIters;
+        } finally {
+            // Always restore gradient tracking and train mode
+            Tensor.noGrad = false;
+            if (model instanceof Module m) m.train();
         }
-
-        // Set train mode
-        if (model instanceof Module m) m.train();
 
         return out;
     }

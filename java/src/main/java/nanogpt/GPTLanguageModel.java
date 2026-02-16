@@ -89,25 +89,31 @@ public class GPTLanguageModel extends Module {
         List<Integer> tokens = new ArrayList<>();
         for (int i : idx) tokens.add(i);
 
-        for (int i = 0; i < maxNewTokens; i++) {
-            // Crop to last blockSize tokens
-            int start = Math.max(0, tokens.size() - blockSize);
-            int[] currentIdx = new int[tokens.size() - start];
-            for (int j = 0; j < currentIdx.length; j++) {
-                currentIdx[j] = tokens.get(start + j);
+        // No gradient tracking during generation
+        Tensor.noGrad = true;
+        try {
+            for (int i = 0; i < maxNewTokens; i++) {
+                // Crop to last blockSize tokens
+                int start = Math.max(0, tokens.size() - blockSize);
+                int[] currentIdx = new int[tokens.size() - start];
+                for (int j = 0; j < currentIdx.length; j++) {
+                    currentIdx[j] = tokens.get(start + j);
+                }
+                int[] idxShape = {1, currentIdx.length};
+
+                Tensor[] result = forward(currentIdx, idxShape, null);
+                Tensor logits = result[0]; // (1, T, vocabSize)
+
+                // Focus on last time step
+                Tensor lastLogits = logits.selectAlongDim(1, -1); // (1, vocabSize)
+                Tensor probs = lastLogits.view(vocabSize).softmax();
+
+                // Sample
+                int nextToken = probs.multinomial(rng);
+                tokens.add(nextToken);
             }
-            int[] idxShape = {1, currentIdx.length};
-
-            Tensor[] result = forward(currentIdx, idxShape, null);
-            Tensor logits = result[0]; // (1, T, vocabSize)
-
-            // Focus on last time step
-            Tensor lastLogits = logits.selectAlongDim(1, -1); // (1, vocabSize)
-            Tensor probs = lastLogits.view(vocabSize).softmax();
-
-            // Sample
-            int nextToken = probs.multinomial(rng);
-            tokens.add(nextToken);
+        } finally {
+            Tensor.noGrad = false;
         }
 
         return tokens.stream().mapToInt(Integer::intValue).toArray();
