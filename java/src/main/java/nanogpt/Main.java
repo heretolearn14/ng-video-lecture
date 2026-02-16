@@ -137,9 +137,13 @@ public class Main {
 
         // Training loop
         int[] shape = dataLoader.getShape();
+        long trainStart = System.currentTimeMillis();
         for (int iter = 0; iter < maxIters; iter++) {
+            long iterStart = System.currentTimeMillis();
+
             // Evaluate loss periodically
             if (iter % evalInterval == 0 || iter == maxIters - 1) {
+                System.out.printf("Evaluating at step %d...%n", iter);
                 float[] losses = estimateLoss(model, dataLoader, evalIters);
                 System.out.printf("step %d: train loss %.4f, val loss %.4f%n",
                         iter, losses[0], losses[1]);
@@ -160,6 +164,14 @@ public class Main {
 
             // Update parameters
             optimizer.step();
+
+            // Heartbeat every 10 iterations
+            if ((iter + 1) % 10 == 0) {
+                long iterMs = System.currentTimeMillis() - iterStart;
+                long totalSec = (System.currentTimeMillis() - trainStart) / 1000;
+                System.out.printf("  iter %d/%d | loss %.4f | %dms/iter | %ds elapsed%n",
+                        iter + 1, maxIters, loss.item(), iterMs, totalSec);
+            }
         }
 
         // Generate text
@@ -188,6 +200,7 @@ public class Main {
         try {
             for (int s = 0; s < 2; s++) {
                 float totalLoss = 0;
+                long splitStart = System.currentTimeMillis();
                 for (int k = 0; k < evalIters; k++) {
                     int[][] batch = dataLoader.getBatch(splits[s]);
                     int[] xb = batch[0];
@@ -200,6 +213,12 @@ public class Main {
                         result = ((GPTLanguageModel) model).forward(xb, shape, yb);
                     }
                     totalLoss += result[1].item();
+
+                    if ((k + 1) % 50 == 0) {
+                        long elapsed = System.currentTimeMillis() - splitStart;
+                        System.out.printf("  [eval %s] %d/%d batches (%.1fs)%n",
+                                splits[s], k + 1, evalIters, elapsed / 1000.0);
+                    }
                 }
                 out[s] = totalLoss / evalIters;
             }

@@ -91,6 +91,7 @@ public class GPTLanguageModel extends Module {
 
         // No gradient tracking during generation
         Tensor.noGrad = true;
+        long genStart = System.currentTimeMillis();
         try {
             for (int i = 0; i < maxNewTokens; i++) {
                 // Crop to last blockSize tokens
@@ -111,6 +112,12 @@ public class GPTLanguageModel extends Module {
                 // Sample
                 int nextToken = probs.multinomial(rng);
                 tokens.add(nextToken);
+
+                if ((i + 1) % 50 == 0) {
+                    long elapsed = System.currentTimeMillis() - genStart;
+                    System.out.printf("  [generating] %d/%d tokens (%.1fs)%n",
+                            i + 1, maxNewTokens, elapsed / 1000.0);
+                }
             }
         } finally {
             Tensor.noGrad = false;
